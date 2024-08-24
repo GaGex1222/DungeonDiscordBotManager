@@ -86,6 +86,56 @@ async def treesync(ctx):
         await ctx.send("You are not allowed to use this command.")
 
 
+class DmOwnerForApproval(discord.ui.View):
+    def __init__(self ,username_for_approval, doc_id, owner_id, user_class_name, user_class_category, message_object, dungeon_instance, interacted_user_id):
+        self.username_for_approval = username_for_approval
+        self.doc_id = doc_id
+        self.owner_id = owner_id
+        self.message_object = message_object
+        self.user_class_name = user_class_name
+        self.user_class_category = user_class_category
+        self.user_approved = None
+        self.dungeon_instace = dungeon_instance
+        self.interacted_user_id = interacted_user_id
+        super().__init__()
+
+        
+        reject_button = discord.ui.Button(label="Reject", style=discord.ButtonStyle.red)
+        reject_button.callback = self.reject_button_callback
+        self.add_item(reject_button)
+        
+        
+        accept_button = discord.ui.Button(label="Approve", style=discord.ButtonStyle.green)
+        accept_button.callback = self.approve_button_callback
+        self.add_item(accept_button)
+
+    async def approve_button_callback(self, interaction: discord.Interaction):
+        player_added = add_player_to_document(class_name=self.user_class_name, username=self.username_for_approval, class_type_to_add=self.user_class_category, _id=self.doc_id)
+        if player_added:
+                self.dungeon_instace.approved_queue.remove(self.username_for_approval)
+                self.dungeon_instace.dungeon_players.append(self.username_for_approval)
+                approved_embed = discord.Embed(title=f"You have approved {self.username_for_approval} to join your dungeon as a {self.user_class_name} in category {self.user_class_category}")
+                await self.message_object.edit(embed=approved_embed, view=None)
+                await self.dungeon_instace.update_embed()
+        else:
+            self.dungeon_instace.approved_queue.remove(self.username_for_approval)
+            await interaction.response.send_message("Your request was denied, possibly because the dungeon is full or the user is already in the dungeon")
+                
+
+
+
+    async def reject_button_callback(self, interaction: discord.Interaction):
+        rejected_embed = discord.Embed(title=f"You have rejected {self.username_for_approval} to join your dungeon as a {self.user_class_name} in category {self.user_class_category}")
+        await self.message_object.edit(embed=rejected_embed, view=None)
+        await interaction.response.send_message(f"{self.username_for_approval} Have Been rejected from joining the dungeon", delete_after=5)
+        self.dungeon_instace.approved_queue.remove(self.username_for_approval)
+
+        
+
+    
+
+    
+
 class ClassSelectorsView(discord.ui.View):
     def __init__(self, doc_id, creator_id, message, username, dungeon_start_time):
         super().__init__()
@@ -97,6 +147,9 @@ class ClassSelectorsView(discord.ui.View):
         self.dungeon_start_time = dungeon_start_time
         self.user_selected_class = {}
         self.user_selected_class_category = {}
+        self.owner_user_object = bot.get_user(int(creator_id))
+        self.approved_queue = []
+        self.dungeon_players = []
 
         #Components
         select_class_menu = Select(
@@ -174,33 +227,38 @@ class ClassSelectorsView(discord.ui.View):
 
     async def register_button_callback(self, interaction: discord.Interaction):
         interacting_user_id = interaction.user.id
-        requsting_username = str(interaction.user.name)
+        requsting_username = str(interaction.user)
+        requsting_user_id = interaction.user.id
+        if requsting_username in self.approved_queue:
+            await interaction.response.send_message("Your request has already been sent to the owner. Please wait for a response before sending another one.", ephemeral=True, delete_after=5)
+            return
+        if requsting_username in self.dungeon_players:
+            await interaction.response.send_message("You are already registered in this dungeon", ephemeral=True, delete_after=5)
+            return
         try:
             user_class_name = self.user_selected_class[interacting_user_id]
             user_class_category = self.user_selected_class_category[interacting_user_id]
         except Exception:
-        
             await interaction.response.send_message("You have to fill in class and class category!", ephemeral=True, delete_after=5)
         else:
-            player_added = add_player_to_document(username=requsting_username, _id=self.doc_id, class_name=user_class_name, class_type_to_add=user_class_category)
-            print(player_added)
-            if player_added:
-                await interaction.response.send_message(f"You have been added To the dungeon as {user_class_name}", ephemeral=True, delete_after=8)
-                await self.update_embed()
-                self.user_selected_class.pop(interacting_user_id)
-                self.user_selected_class_category.pop(interacting_user_id)
-            else:
-                await interaction.response.send_message(f"You are already registered!", ephemeral=True, delete_after=5)
+            await interaction.response.send_message(f"{requsting_username}, Your request has been sent to {self.username}, who will decide whether to accept you", ephemeral=True, delete_after=5)
+            embed = discord.Embed(title=f"Approval request for dungeon from {requsting_username}", description=f"{requsting_username} requested to join your dugeon party as {user_class_name} in category {user_class_category}\nApprove or reject?")
+            message_dmed_to_user = await self.owner_user_object.send(embed=embed)
+            
+            dm_for_owner_view = DmOwnerForApproval(message_object=message_dmed_to_user ,username_for_approval=requsting_username, doc_id=self.doc_id, owner_id=self.creator_id, interacted_user_id=requsting_user_id, user_class_name=user_class_name, user_class_category=user_class_category, dungeon_instance=self)
+            await message_dmed_to_user.edit(view=dm_for_owner_view)
+            self.approved_queue.append(requsting_username)
 
 
 
     async def unregister_button_callback(self, interaction: discord.Interaction):
-        player_deleted = delete_player_from_document(username=str(interaction.user.name), _id=self.doc_id)
+        player_deleted = delete_player_from_document(username=str(interaction.user), _id=self.doc_id)
         if player_deleted:
-            await interaction.response.send_message("You have been successfully unregistered from the dungeon")
-            self.update_embed()
+            await interaction.response.send_message("You have been successfully unregistered from the dungeon", ephemeral=True, delete_after=5)
+            self.dungeon_players.remove(str(interaction.user))
+            await self.update_embed()
         else:
-            await interaction.response.send_message("There was a problem unregistering you from the dungeon, Probably becuase you are not registered!")
+            await interaction.response.send_message("There was a problem unregistering you from the dungeon, Probably becuase you are not registered!", ephemeral=True, delete_after=5)
 
     async def select_callback_class_name(self, interaction: discord.Interaction):
         self.user_selected_class[interaction.user.id] = interaction.data["values"][0]
@@ -225,7 +283,7 @@ async def create_dungeon(interaction: discord.Interaction, date: str, hour: str)
         date_formatted = datetime.strftime(date_object, '%Y %d %B, %A %H:%M')
     except Exception:
         await interaction.response.send_message("Invalid format for date or hour, please use the specified format")
-    new_doc_id = create_document(str(interaction.user.name), date=date_formatted)
+    new_doc_id = create_document(str(interaction.user), date=date_formatted)
     if new_doc_id == False:
         await interaction.response.send_message("Cant create more than one dungeon per user!")
         return
@@ -248,7 +306,7 @@ async def create_dungeon(interaction: discord.Interaction, date: str, hour: str)
 
         await interaction.response.send_message(embed=embed)
         response_message = await interaction.original_response()
-        view = ClassSelectorsView(doc_id=new_doc_id, message=response_message, creator_id=interaction.user.id, username=str(interaction.user.name), dungeon_start_time=date_formatted)
+        view = ClassSelectorsView(doc_id=new_doc_id, message=response_message, creator_id=interaction.user.id, username=str(interaction.user), dungeon_start_time=date_formatted)
         await response_message.edit(view=view)
 
 
