@@ -1,119 +1,47 @@
 import discord
 from discord import app_commands, SelectOption
 from discord.ext import commands
-from discord.ui import view, Button, Select
-import dotenv
+from discord.ui import Select
 from dotenv import load_dotenv
 import os
-import pymongo
+from dbfunctions import *
+import typing
 from class_infos import all_classes, class_types_list
-from pymongo import MongoClient
-from datetime import datetime
+import datetime
+from bson import ObjectId
+import json
+import asyncio
 load_dotenv()
 
-for classing in class_types_list:
-    print(classing)
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 cluster = MongoClient()
 TOKEN = os.getenv('TOKEN')
-MONGODB_PASSWORD = os.getenv('MONGODB_PASSWORD')
-MONGODB_URL = f'mongodb+srv://GaGex:{MONGODB_PASSWORD}@cluster0.6uemb.mongodb.net/'
-mongodb_client = MongoClient(MONGODB_URL)
-primary_database = mongodb_client.Discord
-maplestory_collection = primary_database.Maplestory
 
+#getting all days
+today = datetime.date.today()
+thirty_days_ahead = []
+for index, _ in enumerate(range(25)):
+    if index == 0:
+        thirty_days_ahead.append(today)
+    else:     
+        today = today + datetime.timedelta(days=1)
+        thirty_days_ahead.append(today)
+#getting all hours
+
+all_hours = [datetime.time(hour=h) for h in range(24)]
 
 #pymongo functions
 class_types = ("Dps", "Healers", "Tank")
-class_max_length = {
+role_max_length = {
     "Dps": 10,
     "Healers": 3,
     "Tank": 4,
 }
-def create_document(creator_name, date):
-    if maplestory_collection.find_one({"creator_name": creator_name}):
-        return False
-    else:
-        new_doc = {
-            "date": date,
-            "creator_name": creator_name,
-            "Dps": {},
-            "Healers": {},
-            "Tank": {},
-            "muted_players": [],
-            "in_queue_players": [],
-        }
-        inserted_id = maplestory_collection.insert_one(new_doc).inserted_id
-        return inserted_id
-
-def add_player_to_queue_or_mute_lists(_id, username, queue_or_mute):
-    if queue_or_mute == "mute":
-        query_keyword = "muted_players"
-    elif queue_or_mute == "queue":
-        query_keyword = "in_queue_players"
-    maplestory_collection.update_one({"_id": _id}, {"$push": {query_keyword: username}})
-
-def remove_player_from_queue_or_mute_lists(_id, username, queue_or_mute):
-    if queue_or_mute == "mute":
-        query_keyword = "muted_players"
-    elif queue_or_mute == "queue":
-        query_keyword = "in_queue_players"
-    maplestory_collection.update_one({"_id": _id}, {"$pull": {query_keyword: username}})
-
-def check_if_player_muted_or_in_queue(_id, username, queue_or_mute):
-    if queue_or_mute == "mute":
-        query_keyword = "muted_players"
-    elif queue_or_mute == "queue":
-        query_keyword = "in_queue_players"
-    if maplestory_collection.find_one({"_id": _id, query_keyword: username}):
-        return True
-    else:
-        return False
-
-
-def check_if_player_in_dungeon(_id, username):
-    query = maplestory_collection.find_one({"_id": _id})
-    for class_type in class_types:
-        if query[class_type].get(username):
-            return True
-    return False
-
-def check_length_of_players_in_queue(_id):
-    query = maplestory_collection.find_one({"_id": _id})
-    return len(query["in_queue_players"])
-
-def add_player_to_document(class_name, username, _id, class_type_to_add):
-    query = maplestory_collection.find_one({"_id": _id})
-    if len(query[class_type_to_add]) >= class_max_length[class_type_to_add]:
-        return False
-    for class_type in class_types:
-        if query[class_type].get(username):
-            return False 
-
-    maplestory_collection.update_one(
-        {"_id": _id},
-        {"$set": {f"{class_type_to_add}.{username}": class_name}}
-    )
-    return True
-
-def all_dungeon_players(_id):
-    doc = maplestory_collection.find_one({"_id": _id})
-    players = []
-    for class_type in class_types:
-        for key, value in doc[class_type].items():
-            players.append(key)
-    return players
-        
-def delete_player_from_document(username, _id):
-    query = maplestory_collection.find_one({"_id": _id})
-    for class_type in class_types:
-        if query[class_type].get(username):
-            maplestory_collection.update_one({"_id": _id}, {"$unset": {f"{class_type}.{username}": ""}})
-            return True
-    return False
 
 
 
@@ -171,7 +99,6 @@ class DmOwnerForApproval(discord.ui.View):
         self.interacted_user_id = interacted_user_id
         self.interacted_user_object = bot.get_user(self.interacted_user_id)
         super().__init__()
-
         
         reject_button = discord.ui.Button(label="Reject", style=discord.ButtonStyle.red)
         reject_button.callback = self.reject_button_callback
@@ -186,17 +113,17 @@ class DmOwnerForApproval(discord.ui.View):
         reject_and_mute.callback = self.reject_and_mute_button_callback
         self.add_item(reject_and_mute)
 
-
+    
     async def approve_button_callback(self, interaction: discord.Interaction):
         player_added = add_player_to_document(class_name=self.user_class_name, username=self.username_for_approval, class_type_to_add=self.user_class_role, _id=self.doc_id)
         if player_added:
+                del self.dungeon_instace.user_selected_class_role[self.interacted_user_id], self.dungeon_instace.user_selected_class[self.interacted_user_id]
                 approved_message_dm = discord.Embed(title=f"{self.dungeon_instace.username} have approved your request on joining the dungeon\n\nthe dungeon starts at `{self.dungeon_instace.dungeon_start_time}`\n\nYou have registered as {self.user_class_name} in role {self.user_class_role}")
                 await self.interacted_user_object.send(embed=approved_message_dm)
                 remove_player_from_queue_or_mute_lists(_id=self.doc_id, username=self.username_for_approval, queue_or_mute="queue")
                 approved_embed = discord.Embed(title=f"You have been approved {self.username_for_approval} to join your dungeon at `{self.dungeon_start_time}`\n\nas a {self.user_class_name} in role {self.user_class_role}")
                 await self.message_object.edit(embed=approved_embed, view=None)
                 await self.dungeon_instace.update_embed()
-                await self.dungeon_instace.update_kicked_players_options()
         else:
             remove_player_from_queue_or_mute_lists(_id=self.doc_id, username=self.username_for_approval, queue_or_mute="queue")
             await interaction.response.send_message("Your request was denied, possibly because the dungeon is full or the user is already in the dungeon")
@@ -237,7 +164,7 @@ class ClassSelectorsView(discord.ui.View):
     def __init__(self, doc_id, creator_id, message, username, dungeon_start_time):
         super().__init__()
         self.doc_id = doc_id
-        self.timeout = None
+        self.timeout = 890
         self.creator_id = creator_id
         self.message = message
         self.username = username
@@ -245,8 +172,10 @@ class ClassSelectorsView(discord.ui.View):
         self.user_selected_class = {}
         self.user_selected_class_role = {}
         self.owner_user_object = bot.get_user(int(creator_id))
-        self.selected_kicked_users = None
         self.all_dungeon_players = None
+
+
+    
 
         #Components
         select_class_menu = Select(
@@ -271,16 +200,6 @@ class ClassSelectorsView(discord.ui.View):
         )
         select_class_role_menu.callback = self.select_callback_class_role
         self.add_item(select_class_role_menu)
-
-        self.select_kicked_players = Select(
-            min_values=1,
-            max_values=1,
-            placeholder="Choose player/s to kick...",
-            options=[SelectOption(label="No players available", value="none")],
-            custom_id="select_kicked_players"
-        )
-        self.select_kicked_players.callback = self.select_kicked_players_callback
-        self.add_item(self.select_kicked_players)
         
         unregister_button = discord.ui.Button(label="Unregsiter", style=discord.ButtonStyle.danger)
         unregister_button.callback = self.unregister_button_callback
@@ -290,26 +209,15 @@ class ClassSelectorsView(discord.ui.View):
         register_button.callback = self.register_button_callback
         self.add_item(register_button)
 
-        kick_players_button = discord.ui.Button(label="Kick Players", style=discord.ButtonStyle.grey)
-        kick_players_button.callback = self.kick_button_callback
-        self.add_item(kick_players_button)
-
-
-    async def update_kicked_players_options(self):
-        self.all_dungeon_players = all_dungeon_players(self.doc_id)
-        if len(self.all_dungeon_players) > 0:
-            self.select_kicked_players.options = [SelectOption(label=player) for player in self.all_dungeon_players]
-            self.select_kicked_players.max_values = len(self.all_dungeon_players)
-        else:
-            self.select_kicked_players.max_values = 1
-            self.select_kicked_players.options = [SelectOption(label="No players in dungeon!")]
-        await self.message.edit(view=self)
 
 
 
 
 
 
+    async def on_timeout(self):
+
+        await self.message.delete()
 
     async def update_embed(self):
         created_doc_query = maplestory_collection.find_one({"_id": self.doc_id})
@@ -349,18 +257,6 @@ class ClassSelectorsView(discord.ui.View):
         await self.message.edit(embed=embed)
 
 
-    async def kick_button_callback(self, interaction: discord.Interaction):
-        if self.selected_kicked_users:
-            print(self.selected_kicked_users)
-            for player in self.selected_kicked_users:
-                delete_player_from_document(username=player, _id=self.doc_id)
-                self.selected_kicked_users.remove(player)
-            await interaction.response.send_message("Kicked all players selected from the dungeon", ephemeral=True, delete_after=5)
-            await self.update_embed()
-            await self.update_kicked_players_options()
-        else:
-            await interaction.response.send_message("No players selected to kick", ephemeral=True, delete_after=5)
-
     async def register_button_callback(self, interaction: discord.Interaction):
         interacting_user_id = interaction.user.id
         requsting_username = str(interaction.user)
@@ -383,9 +279,10 @@ class ClassSelectorsView(discord.ui.View):
             if interacting_user_id == self.creator_id:
                 player_added = add_player_to_document(class_name=user_class_name, class_type_to_add=user_class_role, _id=self.doc_id, username=requsting_username)
                 if player_added:
-                    await interaction.response.send_message("Because you are the owner you have been registered without needing to queue!")
+                    del self.user_selected_class_role[interacting_user_id], self.user_selected_class[interacting_user_id]
+                    print(f"Role: {self.user_selected_class_role}, Class : {self.user_selected_class}")
+                    await interaction.response.send_message("Because you are the owner you have been registered without needing to queue!", ephemeral=True, delete_after=5)
                     await self.update_embed()
-                    await self.update_kicked_players_options()
                 else:
                     await interaction.response.send_message("There was a problem registering you, may be because the dungeon is full or the role is full!")
             else:
@@ -419,63 +316,127 @@ class ClassSelectorsView(discord.ui.View):
         print(self.user_selected_class_role)
         await interaction.response.send_message(f"You have selected the role {interaction.data["values"][0]}", ephemeral=True, delete_after=5)
 
-    async def select_kicked_players_callback(self, interaction: discord.Interaction):
-        self.all_dungeon_players = all_dungeon_players(self.doc_id)
-        if self.all_dungeon_players:
-            print(f"All dungeon Players : {self.all_dungeon_players}")
-            if len(self.all_dungeon_players) > 0:
-                self.select_kicked_players.options = [SelectOption(label=player) for player in self.all_dungeon_players]
-                self.select_kicked_players.max_values = len(self.all_dungeon_players)
-            else:
-                self.select_kicked_players.max_values = 1
-                self.select_kicked_players.options = [SelectOption(label="No players in dungeon!")]
-            self.selected_kicked_users = interaction.data["values"]
-            await interaction.response.send_message("Selected player/s successfully!", ephemeral=True, delete_after=5)
-        else:
-            await interaction.response.send_message("There are no players in the current dungeon!", ephemeral=True, delete_after=5)
 
-        
-#Discord bot functions
-@bot.tree.command(name='create_dungeon', description="This command creates a dungeon!")
-@app_commands.describe(date="Specify the dungeon date (YYYY-MM-DD Format)")
-@app_commands.describe(hour="Specify the dungeon start time (H:M Format)")
-async def create_dungeon(interaction: discord.Interaction, date: str, hour: str):
-    try:
-        concatenated_date = f"{date} {hour}"
-        date_object = datetime.strptime(concatenated_date, "%Y-%m-%d %H:%M")
-    except Exception:
-        await interaction.response.send_message("Invalid format for date or hour, please use the specified format")
-    new_doc_id = create_document(str(interaction.user), date=date_object)
-    if new_doc_id == False:
-        await interaction.response.send_message("Cant create more than one dungeon per user!")
-        return
-    else:
-        created_doc_query = maplestory_collection.find_one({"_id": new_doc_id})
+
+class AllDungeonsView(discord.ui.View):
+    def __init__(self):
+        self.all_dungeons = get_all_dungeon_documents()
+        self.selected_doc = None
+        super().__init__()
+
+
+
+
+        select_doc_to_display = Select(
+            min_values=1,
+            max_values=1,
+            placeholder="Choose a dungeon...",
+            options=[SelectOption(label=f"{doc['creator_name']} - {doc['date']} - Total Players : {total_players(doc["_id"])}", value=str(doc["_id"])) for doc in self.all_dungeons],
+            custom_id="dungeons_menu"
+
+        )
+        select_doc_to_display.callback = self.select_dungeon_callback
+        self.add_item(select_doc_to_display)
+
+
+    async def select_dungeon_callback(self, interaction: discord.Interaction):
+        self.selected_doc = interaction.data["values"][0]
+        all_doc_data = get_all_document_data(ObjectId(self.selected_doc))
+        created_doc_query = maplestory_collection.find_one({"_id": ObjectId(all_doc_data["_id"])})
         dps_players_count = len(created_doc_query["Dps"])
         tank_players_count = len(created_doc_query["Tank"])
         healer_players_count = len(created_doc_query["Healers"])
         class_types_max_players_and_counts = [
             ("Dps", dps_players_count, 10),
-            ("Healer", healer_players_count, 3),
+            ("Healers", healer_players_count, 3),
             ("Tank", tank_players_count, 4)
         ]
+        query = maplestory_collection.find_one({"_id": ObjectId(all_doc_data["_id"])})
+        Dps_players = ''
+        Healers_players = ''
+        Tank_players = ''
+        for class_type in class_types:
+            for player, class_name in query[class_type].items():
+                if class_type == "Dps":
+                    Dps_players += f"{player} {class_name}\n"
+                elif class_type == "Healers":
+                    Healers_players += f"{player} {class_name}\n"
+                else:   
+                    Tank_players += f"{player} {class_name}\n"
+        player_map = {
+        "Dps": Dps_players,
+        "Healers": Healers_players,
+        "Tank": Tank_players
+        }
 
-        embed = discord.Embed(title="Dungeon", description=f'Leader : {interaction.user} - ID {interaction.user.id}')
+        embed = discord.Embed(title="Dungeon", description=f'Leader : {all_doc_data["creator_name"]} - ID {ObjectId(all_doc_data["_id"])}')
         for class_type, count, max_players in class_types_max_players_and_counts:
-            embed.add_field(name=f"{class_type}", value=f"{max_players}/{count}")
-        embed.add_field(name="Total players 📊", value=dps_players_count + tank_players_count + healer_players_count)
-        embed.add_field(name="Start Time :calendar_spiral: ", value=f"`{date_object}`")
-        embed.add_field(name="Players in queue 🚦", value=check_length_of_players_in_queue(new_doc_id))
-
-
+            value = player_map.get(class_type, "No players registered.")
+            embed.add_field(name=f"{class_type} {max_players}/{count}", value=value)
+        embed.add_field(name="Total players 📊", value=total_players(ObjectId(all_doc_data["_id"])))
+        embed.add_field(name="Start Time :calendar_spiral: ", value=f"`{all_doc_data["date"]}`")
+        embed.add_field(name="Players in queue 🚦", value=check_length_of_players_in_queue(ObjectId(all_doc_data["_id"])))
         await interaction.response.send_message(embed=embed)
-        response_message = await interaction.original_response()
-        view = ClassSelectorsView(doc_id=new_doc_id, message=response_message, creator_id=interaction.user.id, username=str(interaction.user), dungeon_start_time=date_object)
-        await response_message.edit(view=view)
+        msg_sent = await interaction.original_response()
+        class_selector_view = ClassSelectorsView(doc_id=ObjectId(all_doc_data["_id"]), creator_id=all_doc_data["creator_id"], username=all_doc_data["creator_name"], message=msg_sent, dungeon_start_time=all_doc_data["date"])
+        await msg_sent.edit(view=class_selector_view)
 
 
 
 
+
+@bot.tree.command(name='create_dungeon', description="This command creates a dungeon!")
+@app_commands.choices(dates=[app_commands.Choice(name=d.strftime("%Y-%m-%d"), value=d.strftime("%Y-%m-%d")) for d in thirty_days_ahead])
+@app_commands.choices(hours=[app_commands.Choice(name=time.strftime("%H:%M"), value=time.strftime("%H:%M")) for time in all_hours])
+async def create_dungeon(interaction: discord.Interaction, dates: str, hours: str):
+    try:
+        concatenated_date = f"{dates} {hours}"
+    except Exception:
+        await interaction.response.send_message("Invalid format for date or hour, please use the specified format")
+    new_doc_id = create_document(str(interaction.user), date=concatenated_date, creator_id=interaction.user.id)
+    created_doc_query = maplestory_collection.find_one({"_id": new_doc_id})
+    dps_players_count = len(created_doc_query["Dps"])
+    tank_players_count = len(created_doc_query["Tank"])
+    healer_players_count = len(created_doc_query["Healers"])
+    class_types_max_players_and_counts = [
+        ("Dps", dps_players_count, 10),
+        ("Healer", healer_players_count, 3),
+        ("Tank", tank_players_count, 4)
+    ]
+
+    embed = discord.Embed(title="Dungeon", description=f'Leader : {interaction.user} - ID {interaction.user.id}')
+    for class_type, count, max_players in class_types_max_players_and_counts:
+        embed.add_field(name=f"{class_type}", value=f"{max_players}/{count}")
+    embed.add_field(name="Total players 📊", value=total_players(new_doc_id))
+    embed.add_field(name="Start Time :calendar_spiral: ", value=f"`{concatenated_date}`")
+    embed.add_field(name="Players in queue 🚦", value=check_length_of_players_in_queue(new_doc_id))
+
+
+    await interaction.response.send_message(embed=embed)
+    response_message = await interaction.original_response()
+    view = ClassSelectorsView(doc_id=new_doc_id, message=response_message, creator_id=interaction.user.id, username=str(interaction.user), dungeon_start_time=concatenated_date)
+    await response_message.edit(view=view)
+
+
+@bot.tree.command(name='show_and_join_dungeons', description="Shows all dungeons and let you interact with them!")
+async def show_and_join_dungeons(interaction: discord.Interaction):
+    all_docs = get_all_dungeon_documents()
+    if all_docs:
+        all_dungeons_string = ''
+        all_docs_embed = discord.Embed(title="All Dungeons", description="All Dungeons available right now, use the dropdown below to join one of them!")
+        for doc in all_docs:
+            all_dungeons_string += f"{doc["creator_name"]} - `{doc["date"]}` - Total Players : {total_players(doc["_id"])}\n"
+        all_docs_embed.add_field(name="Dungeons:", value=all_dungeons_string)
+        await interaction.response.send_message(embed=all_docs_embed)
+        msg = await interaction.original_response()
+        all_dungeons_view = AllDungeonsView()
+        await msg.edit(view=all_dungeons_view)
+    else:
+        print("No")
+        all_docs_embed = discord.Embed(title="All Dungeons", description="All Dungeons available right now, use the dropdown below to join one of them!")
+        all_docs_embed.add_field(name="Dungeons:", value="No Dungeons available")
+        await interaction.response.send_message(embed=all_docs_embed)
+    
 
 
 
